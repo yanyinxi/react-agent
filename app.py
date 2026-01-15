@@ -1,22 +1,42 @@
 #!/usr/bin/env python3
 """
-FastAPI后端服务 - 为ReAct Agent提供Web接口
+FastAPI后端服务 - 为ReAct Agent提供Web接口（支持流式输出）
 """
 
+import logging
+import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Optional
 import uvicorn
+import asyncio
 
-from agent import ReactAgent
+from agent import ReactAgent, logger
+
+# 全局Agent实例
+agent: Optional[ReactAgent] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    global agent
+    try:
+        agent = ReactAgent()
+    except ValueError as e:
+        logger.error(f"Agent初始化失败: {e}")
+    yield
+    logger.info("应用关闭")
+
 
 app = FastAPI(
     title="ReAct Agent API",
-    description="基于LangChain的ReAct模式智能Agent",
-    version="1.0.0"
+    description="基于LangChain的ReAct模式智能Agent（支持流式输出）",
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # 添加CORS支持
@@ -27,9 +47,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 全局Agent实例
-agent: Optional[ReactAgent] = None
 
 
 class ChatRequest(BaseModel):
@@ -46,19 +63,6 @@ class ToolInfo(BaseModel):
     description: str
 
 
-@app.on_event("startup")
-async def startup_event():
-    """启动时初始化Agent"""
-    global agent
-    try:
-        agent = ReactAgent()
-        print("ReAct Agent 初始化成功")
-        print("可用工具:", [t["name"] for t in agent.get_tools_info()])
-    except ValueError as e:
-        print(f"Agent初始化失败: {e}")
-        print("请确保设置了环境变量 OPENAI_BASE_URL 和 OPENAI_API_KEY")
-
-
 @app.get("/")
 async def root():
     """返回聊天页面"""
@@ -67,7 +71,7 @@ async def root():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """处理聊天请求"""
+    """处理聊天请求（非流式）"""
     global agent
     if agent is None:
         raise HTTPException(status_code=500, detail="Agent未初始化，请检查环境变量")
@@ -79,6 +83,37 @@ async def chat(request: ChatRequest):
     return ChatResponse(
         response=result["output"],
         success=result["success"]
+    )
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """流式处理聊天请求（SSE）"""
+    global agent
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent未初始化，请检查环境变量")
+    
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="消息不能为空")
+    
+    async def generate():
+        try:
+            for chunk in agent.chat_stream(request.message):
+                if chunk:
+                    # SSE格式
+                    yield f"data: {chunk}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"流式输出错误: {e}")
+            yield f"data: [ERROR] {str(e)}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
     )
 
 

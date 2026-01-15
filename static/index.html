@@ -74,6 +74,10 @@
             background: rgba(255, 255, 255, 0.25);
         }
 
+        .header-btn.active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         .tools-panel {
             background: #252535;
             padding: 15px 20px;
@@ -123,6 +127,7 @@
             line-height: 1.6;
             word-wrap: break-word;
             animation: fadeIn 0.3s ease;
+            white-space: pre-wrap;
         }
 
         @keyframes fadeIn {
@@ -143,6 +148,10 @@
             color: #cdd6f4;
             border-bottom-left-radius: 5px;
             border: 1px solid #333;
+        }
+
+        .message.assistant.streaming {
+            border-color: #e94560;
         }
 
         .message.assistant pre {
@@ -168,6 +177,21 @@
         .message.error {
             background: #45293d;
             color: #f38ba8;
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 18px;
+            background: #e94560;
+            animation: blink 1s infinite;
+            vertical-align: middle;
+            margin-left: 2px;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
         }
 
         .chat-input-container {
@@ -224,44 +248,6 @@
             transform: none;
         }
 
-        .typing-indicator {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 15px 20px;
-            background: #252535;
-            border-radius: 15px;
-            align-self: flex-start;
-            border: 1px solid #333;
-            border-bottom-left-radius: 5px;
-        }
-
-        .typing-indicator .dots {
-            display: flex;
-            gap: 5px;
-        }
-
-        .typing-indicator span {
-            width: 8px;
-            height: 8px;
-            background: #e94560;
-            border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out;
-        }
-
-        .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
-        .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
-
-        .typing-text {
-            color: #888;
-            font-size: 0.9rem;
-        }
-
-        @keyframes bounce {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1); }
-        }
-
         .welcome-message {
             text-align: center;
             color: #888;
@@ -302,6 +288,33 @@
             border-color: #e94560;
         }
 
+        .status-bar {
+            background: #252535;
+            padding: 8px 20px;
+            font-size: 0.8rem;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+            border-top: 1px solid #333;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-dot.online { background: #94e2d5; }
+        .status-dot.offline { background: #f38ba8; }
+        .status-dot.thinking { background: #f9e2af; animation: pulse 1s infinite; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
         /* 滚动条样式 */
         .chat-messages::-webkit-scrollbar {
             width: 8px;
@@ -326,37 +339,40 @@
         <div class="chat-header">
             <div class="header-left">
                 <h1>ReAct Agent</h1>
-                <p>推理 + 行动 智能助手</p>
+                <p>推理 + 行动 智能助手 (流式输出)</p>
             </div>
             <div class="header-buttons">
-                <button class="header-btn" onclick="toggleTools()">工具</button>
+                <button class="header-btn" id="tools-btn" onclick="toggleTools()">工具</button>
                 <button class="header-btn" onclick="resetChat()">重置</button>
             </div>
         </div>
 
         <div class="tools-panel" id="tools-panel">
             <h3>可用工具</h3>
-            <div class="tools-list" id="tools-list">
-                <!-- 工具列表将动态加载 -->
-            </div>
+            <div class="tools-list" id="tools-list"></div>
         </div>
         
         <div class="chat-messages" id="chat-messages">
             <div class="welcome-message">
                 <h2>欢迎使用 ReAct Agent</h2>
-                <p>我是一个可以使用工具的智能助手，能够边推理边行动来解决问题</p>
+                <p>我是一个可以使用工具的智能助手，支持流式输出</p>
                 <div class="example-queries">
                     <span class="example-query" onclick="setQuery('现在几点了？')">现在几点了？</span>
-                    <span class="example-query" onclick="setQuery('计算 123 * 456')">计算 123 * 456</span>
-                    <span class="example-query" onclick="setQuery('分析这段文本：人工智能正在改变世界')">分析文本</span>
+                    <span class="example-query" onclick="setQuery('计算 123 * 456 + 789')">计算表达式</span>
+                    <span class="example-query" onclick="setQuery('分析这段文本：人工智能正在改变世界的方方面面')">分析文本</span>
                     <span class="example-query" onclick="setQuery('搜索最新的AI技术进展')">搜索信息</span>
                 </div>
             </div>
         </div>
+
+        <div class="status-bar">
+            <span><span class="status-dot online" id="status-dot"></span><span id="status-text">已连接</span></span>
+            <span id="char-count"></span>
+        </div>
         
         <div class="chat-input-container">
             <div class="chat-input-wrapper">
-                <input type="text" id="message-input" placeholder="输入消息，我会思考并使用工具来帮助你..." autocomplete="off">
+                <input type="text" id="message-input" placeholder="输入消息，我会实时响应..." autocomplete="off">
                 <button id="send-btn" onclick="sendMessage()">发送</button>
             </div>
         </div>
@@ -368,9 +384,13 @@
         const sendBtn = document.getElementById('send-btn');
         const toolsPanel = document.getElementById('tools-panel');
         const toolsList = document.getElementById('tools-list');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const charCount = document.getElementById('char-count');
         let isFirstMessage = true;
+        let currentAssistantMessage = null;
 
-        // 页面加载时获取工具列表
+        // 页面加载
         window.onload = () => {
             loadTools();
             messageInput.focus();
@@ -400,11 +420,17 @@
 
         function toggleTools() {
             toolsPanel.classList.toggle('active');
+            document.getElementById('tools-btn').classList.toggle('active');
         }
 
         function setQuery(query) {
             messageInput.value = query;
             messageInput.focus();
+        }
+
+        function setStatus(status, text) {
+            statusDot.className = 'status-dot ' + status;
+            statusText.textContent = text;
         }
 
         function addMessage(content, type) {
@@ -416,36 +442,49 @@
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
-            
-            // 简单的markdown处理
-            let formattedContent = content
-                .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
-                .replace(/\n/g, '<br>');
-            
-            messageDiv.innerHTML = formattedContent;
+            messageDiv.textContent = content;
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             return messageDiv;
         }
 
-        function showTyping() {
-            const typingDiv = document.createElement('div');
-            typingDiv.className = 'typing-indicator';
-            typingDiv.id = 'typing';
-            typingDiv.innerHTML = `
-                <div class="dots">
-                    <span></span><span></span><span></span>
-                </div>
-                <span class="typing-text">Agent思考中...</span>
-            `;
-            messagesContainer.appendChild(typingDiv);
+        function createStreamingMessage() {
+            if (isFirstMessage) {
+                const welcome = messagesContainer.querySelector('.welcome-message');
+                if (welcome) welcome.remove();
+                isFirstMessage = false;
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant streaming';
+            messageDiv.innerHTML = '<span class="cursor"></span>';
+            messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            return messageDiv;
         }
 
-        function hideTyping() {
-            const typing = document.getElementById('typing');
-            if (typing) typing.remove();
+        function updateStreamingMessage(messageDiv, content) {
+            // 简单的markdown处理
+            let formattedContent = content
+                .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>');
+            
+            messageDiv.innerHTML = formattedContent + '<span class="cursor"></span>';
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            charCount.textContent = `${content.length} 字符`;
+        }
+
+        function finalizeStreamingMessage(messageDiv, content) {
+            let formattedContent = content
+                .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>');
+            
+            messageDiv.innerHTML = formattedContent;
+            messageDiv.classList.remove('streaming');
         }
 
         async function sendMessage() {
@@ -457,33 +496,65 @@
             
             sendBtn.disabled = true;
             messageInput.disabled = true;
-            showTyping();
+            setStatus('thinking', 'Agent思考中...');
+
+            // 创建流式消息容器
+            const assistantMessage = createStreamingMessage();
+            let fullContent = '';
 
             try {
-                const response = await fetch('/api/chat', {
+                const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message })
                 });
 
-                hideTyping();
-
                 if (!response.ok) {
                     const error = await response.json();
+                    assistantMessage.remove();
                     addMessage(`错误: ${error.detail}`, 'error');
+                    setStatus('offline', '请求失败');
                     return;
                 }
 
-                const data = await response.json();
-                addMessage(data.response, 'assistant');
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            
+                            if (data === '[DONE]') {
+                                finalizeStreamingMessage(assistantMessage, fullContent);
+                                setStatus('online', '已连接');
+                            } else if (data.startsWith('[ERROR]')) {
+                                assistantMessage.remove();
+                                addMessage(data.slice(8), 'error');
+                                setStatus('offline', '发生错误');
+                            } else {
+                                fullContent += data;
+                                updateStreamingMessage(assistantMessage, fullContent);
+                            }
+                        }
+                    }
+                }
 
             } catch (error) {
-                hideTyping();
+                assistantMessage.remove();
                 addMessage(`网络错误: ${error.message}`, 'error');
+                setStatus('offline', '连接失败');
             } finally {
                 sendBtn.disabled = false;
                 messageInput.disabled = false;
                 messageInput.focus();
+                charCount.textContent = '';
             }
         }
 
@@ -495,11 +566,11 @@
                     messagesContainer.innerHTML = `
                         <div class="welcome-message">
                             <h2>欢迎使用 ReAct Agent</h2>
-                            <p>我是一个可以使用工具的智能助手，能够边推理边行动来解决问题</p>
+                            <p>我是一个可以使用工具的智能助手，支持流式输出</p>
                             <div class="example-queries">
                                 <span class="example-query" onclick="setQuery('现在几点了？')">现在几点了？</span>
-                                <span class="example-query" onclick="setQuery('计算 123 * 456')">计算 123 * 456</span>
-                                <span class="example-query" onclick="setQuery('分析这段文本：人工智能正在改变世界')">分析文本</span>
+                                <span class="example-query" onclick="setQuery('计算 123 * 456 + 789')">计算表达式</span>
+                                <span class="example-query" onclick="setQuery('分析这段文本：人工智能正在改变世界的方方面面')">分析文本</span>
                                 <span class="example-query" onclick="setQuery('搜索最新的AI技术进展')">搜索信息</span>
                             </div>
                         </div>

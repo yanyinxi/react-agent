@@ -7,14 +7,124 @@ ReAct Agent - 使用LangChain实现的推理+行动Agent
 import os
 import sys
 import logging
+import ast
+import operator
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Generator
+from urllib.parse import urlparse
+from dataclasses import dataclass
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.callbacks import BaseCallbackHandler
 from langgraph.prebuilt import create_react_agent
+from openai import APIError, RateLimitError, APITimeoutError
 import math
+
+
+# ============ 配置类 ============
+
+@dataclass
+class AgentConfig:
+    """Agent 配置"""
+    model: str = "claude-opus-4-5-20251101"
+    temperature: float = 0
+    max_tokens: int = 2000
+    max_history: int = 50  # 最大对话历史条数
+    timeout: int = 30  # API 超时秒数
+
+
+# ============ 安全数学表达式计算 ============
+
+class SafeMathEvaluator:
+    """安全的数学表达式计算器，使用 AST 解析避免代码注入"""
+
+    ALLOWED_OPERATORS = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    ALLOWED_FUNCTIONS = {
+        'abs': abs,
+        'round': round,
+        'min': min,
+        'max': max,
+        'sum': sum,
+        'pow': pow,
+        'sqrt': math.sqrt,
+        'sin': math.sin,
+        'cos': math.cos,
+        'tan': math.tan,
+        'log': math.log,
+        'log10': math.log10,
+        'exp': math.exp,
+        'floor': math.floor,
+        'ceil': math.ceil,
+    }
+
+    ALLOWED_CONSTANTS = {
+        'pi': math.pi,
+        'e': math.e,
+    }
+
+    def evaluate(self, expression: str) -> float:
+        """安全地计算数学表达式"""
+        try:
+            tree = ast.parse(expression, mode='eval')
+            return self._eval_node(tree.body)
+        except (SyntaxError, TypeError, KeyError) as e:
+            raise ValueError(f"无效的数学表达式: {e}")
+
+    def _eval_node(self, node: ast.AST) -> float:
+        """递归计算 AST 节点"""
+        if isinstance(node, ast.Constant):  # 数字常量
+            if isinstance(node.value, (int, float)):
+                return node.value
+            raise ValueError(f"不支持的常量类型: {type(node.value)}")
+
+        elif isinstance(node, ast.Name):  # 变量名（常量如 pi, e）
+            if node.id in self.ALLOWED_CONSTANTS:
+                return self.ALLOWED_CONSTANTS[node.id]
+            raise ValueError(f"未知的常量: {node.id}")
+
+        elif isinstance(node, ast.BinOp):  # 二元运算
+            op_type = type(node.op)
+            if op_type not in self.ALLOWED_OPERATORS:
+                raise ValueError(f"不支持的运算符: {op_type.__name__}")
+            left = self._eval_node(node.left)
+            right = self._eval_node(node.right)
+            return self.ALLOWED_OPERATORS[op_type](left, right)
+
+        elif isinstance(node, ast.UnaryOp):  # 一元运算
+            op_type = type(node.op)
+            if op_type not in self.ALLOWED_OPERATORS:
+                raise ValueError(f"不支持的一元运算符: {op_type.__name__}")
+            operand = self._eval_node(node.operand)
+            return self.ALLOWED_OPERATORS[op_type](operand)
+
+        elif isinstance(node, ast.Call):  # 函数调用
+            if not isinstance(node.func, ast.Name):
+                raise ValueError("不支持复杂的函数调用")
+            func_name = node.func.id
+            if func_name not in self.ALLOWED_FUNCTIONS:
+                raise ValueError(f"不支持的函数: {func_name}")
+            args = [self._eval_node(arg) for arg in node.args]
+            return self.ALLOWED_FUNCTIONS[func_name](*args)
+
+        else:
+            raise ValueError(f"不支持的表达式类型: {type(node).__name__}")
+
+
+# 全局安全计算器实例
+_safe_math = SafeMathEvaluator()
 
 # ============ 日志配置 ============
 
@@ -84,19 +194,16 @@ class StreamingCallbackHandler(BaseCallbackHandler):
 
 @tool
 def calculator(expression: str) -> str:
-    """计算数学表达式。输入应该是一个有效的Python数学表达式，如 '2 + 2' 或 'math.sqrt(16)'"""
+    """计算数学表达式。支持基本运算(+,-,*,/,**,%)和函数(sqrt,sin,cos,tan,log,abs,round等)，以及常量(pi,e)。示例: '2 + 2', 'sqrt(16)', '3.14 * 2**2'"""
     try:
-        allowed_names = {
-            "abs": abs, "round": round, "min": min, "max": max,
-            "sum": sum, "pow": pow, "len": len,
-            "math": math, "sqrt": math.sqrt, "sin": math.sin,
-            "cos": math.cos, "tan": math.tan, "log": math.log,
-            "pi": math.pi, "e": math.e
-        }
-        result = eval(expression, {"__builtins__": {}}, allowed_names)
+        result = _safe_math.evaluate(expression)
         return f"计算结果: {result}"
-    except Exception as e:
+    except ValueError as e:
         return f"计算错误: {str(e)}"
+    except ZeroDivisionError:
+        return "计算错误: 除数不能为零"
+    except OverflowError:
+        return "计算错误: 数值溢出"
 
 
 @tool
@@ -131,29 +238,34 @@ def text_analyzer(text: str) -> str:
 
 class ReactAgent:
     """ReAct模式的Agent，支持工具调用和流式输出"""
-    
-    def __init__(self, model: str = "claude-opus-4-5-20251101"):
+
+    def __init__(self, config: Optional[AgentConfig] = None):
+        self.config = config or AgentConfig()
         self.base_url = os.environ.get("OPENAI_BASE_URL")
         self.api_key = os.environ.get("OPENAI_API_KEY")
-        
-        if not self.base_url or not self.api_key:
-            raise ValueError("请设置环境变量 OPENAI_BASE_URL 和 OPENAI_API_KEY")
-        
+
+        # 验证环境变量
+        self._validate_config()
+
+        # 线程锁，保护对话历史
+        self._lock = threading.Lock()
+
         logger.info("=" * 60)
         logger.info("🚀 初始化 ReAct Agent")
-        logger.info(f"   模型: {model}")
+        logger.info(f"   模型: {self.config.model}")
         logger.info(f"   API: {self.base_url}")
-        
-        # 初始化LLM
+
+        # 初始化LLM（带超时）
         self.llm = ChatOpenAI(
-            model=model,
+            model=self.config.model,
             base_url=self.base_url,
             api_key=self.api_key,
-            temperature=0,
-            max_tokens=2000,
-            streaming=True
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            streaming=True,
+            request_timeout=self.config.timeout
         )
-        
+
         # 定义工具列表
         self.tools = [
             calculator,
@@ -161,75 +273,119 @@ class ReactAgent:
             search_web,
             text_analyzer
         ]
-        
+
         logger.info(f"   工具: {[t.name for t in self.tools]}")
-        
+
         # 系统提示
         self.system_message = SystemMessage(content="""你是一个智能助手，可以使用工具来帮助用户解决问题。
 请用中文回答用户的问题。如果需要使用工具，请先说明你的思考过程，然后使用工具。""")
-        
+
         # 创建ReAct Agent
         self.agent = create_react_agent(
             self.llm,
             self.tools
         )
-        
+
         # 对话历史
-        self.messages = []
-        
+        self.messages: List[Any] = []
+
         logger.info("✅ ReAct Agent 初始化完成")
         logger.info("=" * 60)
-    
+
+    def _validate_config(self) -> None:
+        """验证环境变量配置"""
+        if not self.base_url or not self.api_key:
+            raise ValueError("请设置环境变量 OPENAI_BASE_URL 和 OPENAI_API_KEY")
+
+        # 验证 API 密钥格式
+        if len(self.api_key) < 10:
+            raise ValueError("API 密钥格式无效（长度过短）")
+
+        # 验证 Base URL 格式
+        parsed = urlparse(self.base_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError("Base URL 格式无效，应为完整 URL（如 https://api.example.com）")
+
+    def _build_messages(self, user_input: str) -> List[Any]:
+        """构建消息列表"""
+        return [self.system_message] + self.messages + [HumanMessage(content=user_input)]
+
+    def _add_to_history(self, user_input: str, output: str) -> None:
+        """线程安全地添加对话到历史，并限制历史长度"""
+        with self._lock:
+            self.messages.append(HumanMessage(content=user_input))
+            self.messages.append(AIMessage(content=output))
+            # 限制历史长度，防止内存泄漏
+            if len(self.messages) > self.config.max_history:
+                self.messages = self.messages[-self.config.max_history:]
+
     def chat(self, user_input: str) -> Dict[str, Any]:
         """处理用户输入并返回响应"""
         logger.info("-" * 60)
         logger.info(f"👤 用户输入: {user_input}")
         logger.info("-" * 60)
-        
+
         try:
-            # 构建消息列表
-            messages = [self.system_message] + self.messages + [HumanMessage(content=user_input)]
-            
+            messages = self._build_messages(user_input)
+
             # 调用Agent
             logger.info("🤖 Agent开始处理...")
             result = self.agent.invoke({"messages": messages})
-            
+
             # 提取最终回复
             final_message = result["messages"][-1]
             output = final_message.content if hasattr(final_message, 'content') else str(final_message)
-            
+
             # 更新对话历史
-            self.messages.append(HumanMessage(content=user_input))
-            self.messages.append(AIMessage(content=output))
-            
+            self._add_to_history(user_input, output)
+
             logger.info("-" * 60)
             logger.info(f"🤖 Agent回复: {output[:200]}{'...' if len(output) > 200 else ''}")
             logger.info("-" * 60)
-            
+
             return {
                 "output": output,
                 "success": True
             }
-        except Exception as e:
-            logger.error(f"❌ 处理请求时出错: {str(e)}")
+        except RateLimitError:
+            logger.error("❌ API 请求过于频繁")
             return {
-                "output": f"处理请求时出错: {str(e)}",
+                "output": "请求过于频繁，请稍后重试",
                 "success": False
             }
-    
+        except APITimeoutError:
+            logger.error("❌ API 请求超时")
+            return {
+                "output": "请求超时，请稍后重试",
+                "success": False
+            }
+        except APIError as e:
+            logger.error(f"❌ API 错误: {str(e)}")
+            return {
+                "output": f"API 错误: {str(e)}",
+                "success": False
+            }
+        except Exception as e:
+            logger.exception("❌ 处理请求时出错")
+            return {
+                "output": "服务暂时不可用，请稍后重试",
+                "success": False
+            }
+
     def chat_stream(self, user_input: str) -> Generator[str, None, None]:
         """流式处理用户输入"""
         logger.info("-" * 60)
         logger.info(f"👤 用户输入: {user_input}")
         logger.info("-" * 60)
-        
+
         try:
-            messages = [self.system_message] + self.messages + [HumanMessage(content=user_input)]
-            
+            messages = self._build_messages(user_input)
+
             logger.info("🤖 Agent开始流式处理...")
-            
-            full_response = ""
-            
+
+            # 使用列表收集响应，避免 O(n²) 字符串拼接
+            response_parts: List[str] = []
+
             for chunk in self.agent.stream({"messages": messages}):
                 # 处理不同类型的chunk
                 if "agent" in chunk:
@@ -237,33 +393,43 @@ class ReactAgent:
                     for msg in agent_messages:
                         if hasattr(msg, 'content') and msg.content:
                             content = msg.content
-                            full_response += content
+                            response_parts.append(content)
                             yield content
-                
+
                 elif "tools" in chunk:
                     tool_messages = chunk["tools"].get("messages", [])
                     for msg in tool_messages:
                         tool_name = getattr(msg, 'name', 'unknown')
                         tool_content = msg.content if hasattr(msg, 'content') else str(msg)
                         logger.info(f"🔧 工具 {tool_name} 返回: {tool_content}")
-            
+
             # 更新对话历史
-            self.messages.append(HumanMessage(content=user_input))
-            self.messages.append(AIMessage(content=full_response))
-            
+            full_response = ''.join(response_parts)
+            self._add_to_history(user_input, full_response)
+
             logger.info("-" * 60)
             logger.info(f"🤖 Agent回复完成，共 {len(full_response)} 字符")
             logger.info("-" * 60)
-            
+
+        except RateLimitError:
+            logger.error("❌ API 请求过于频繁")
+            yield "请求过于频繁，请稍后重试"
+        except APITimeoutError:
+            logger.error("❌ API 请求超时")
+            yield "请求超时，请稍后重试"
+        except APIError as e:
+            logger.error(f"❌ API 错误: {str(e)}")
+            yield f"API 错误: {str(e)}"
         except Exception as e:
-            logger.error(f"❌ 流式处理出错: {str(e)}")
-            yield f"处理请求时出错: {str(e)}"
-    
-    def reset(self):
+            logger.exception("❌ 流式处理出错")
+            yield "服务暂时不可用，请稍后重试"
+
+    def reset(self) -> None:
         """重置对话历史"""
-        self.messages = []
+        with self._lock:
+            self.messages = []
         logger.info("🔄 对话历史已重置")
-    
+
     def get_tools_info(self) -> List[Dict[str, str]]:
         """获取可用工具信息"""
         return [

@@ -390,6 +390,25 @@
         let isFirstMessage = true;
         let currentAssistantMessage = null;
 
+        // HTML 转义函数，防止 XSS 攻击
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 安全的 markdown 格式化（先转义，再格式化）
+        function formatMarkdown(text) {
+            // 先转义 HTML
+            let escaped = escapeHtml(text);
+            // 再应用简单的 markdown 格式化
+            return escaped
+                .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>');
+        }
+
         // 页面加载
         window.onload = () => {
             loadTools();
@@ -409,9 +428,16 @@
                 const response = await fetch('/api/tools');
                 if (response.ok) {
                     const tools = await response.json();
-                    toolsList.innerHTML = tools.map(tool => 
-                        `<span class="tool-tag" title="${tool.description}">${tool.name}</span>`
-                    ).join('');
+                    // 清空工具列表
+                    toolsList.innerHTML = '';
+                    // 安全地创建工具标签
+                    tools.forEach(tool => {
+                        const span = document.createElement('span');
+                        span.className = 'tool-tag';
+                        span.title = tool.description;  // title 属性会自动转义
+                        span.textContent = tool.name;   // textContent 自动转义
+                        toolsList.appendChild(span);
+                    });
                 }
             } catch (error) {
                 console.error('加载工具列表失败:', error);
@@ -457,32 +483,26 @@
 
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message assistant streaming';
-            messageDiv.innerHTML = '<span class="cursor"></span>';
+            // 使用 DOM API 创建光标元素
+            const cursor = document.createElement('span');
+            cursor.className = 'cursor';
+            messageDiv.appendChild(cursor);
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             return messageDiv;
         }
 
         function updateStreamingMessage(messageDiv, content) {
-            // 简单的markdown处理
-            let formattedContent = content
-                .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
-                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                .replace(/\n/g, '<br>');
-            
+            // 使用安全的 markdown 格式化
+            let formattedContent = formatMarkdown(content);
             messageDiv.innerHTML = formattedContent + '<span class="cursor"></span>';
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             charCount.textContent = `${content.length} 字符`;
         }
 
         function finalizeStreamingMessage(messageDiv, content) {
-            let formattedContent = content
-                .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
-                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                .replace(/\n/g, '<br>');
-            
+            // 使用安全的 markdown 格式化
+            let formattedContent = formatMarkdown(content);
             messageDiv.innerHTML = formattedContent;
             messageDiv.classList.remove('streaming');
         }
